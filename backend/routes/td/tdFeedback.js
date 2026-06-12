@@ -1,14 +1,15 @@
-const express = require('express');
-const ctrl = require('../../controllers/tdFeedbackController');
-const { protect } = require('../../middleware/auth');
+const express    = require('express');
+const controller = require('../../controllers/tdFeedbackController');
+const { protect, authorize } = require('../../middleware/auth');
+const { protectCustomer }    = require('../../middleware/customerAuth');
 
 const router = express.Router();
 
-// Public: customer submits feedback (no auth required for simplicity)
-router.post('/', ctrl.submitFeedback);
+// ── Customer submits feedback ─────────────────────────────────────────────────
+router.post('/', protectCustomer, controller.submitFeedback);
 
-// Admin
-router.get('/', protect, ctrl.getAllFeedback);
-router.get('/stats', protect, ctrl.getFeedbackStats);
+// ── Admin views feedback ──────────────────────────────────────────────────────
+router.get('/',                   protect, controller.getFeedbacks);
+router.get('/booking/:bookingId', protect, controller.getFeedbackByBooking);
 
 module.exports = router;

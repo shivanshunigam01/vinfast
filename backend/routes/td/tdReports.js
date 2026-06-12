@@ -1,18 +1,13 @@
-const express = require('express');
-const ctrl = require('../../controllers/tdReportController');
+const express    = require('express');
+const controller = require('../../controllers/tdReportController');
 const { protect, authorize } = require('../../middleware/auth');
 
 const router = express.Router();
 router.use(protect);
 
-router.get('/summary', ctrl.reportSummary);
-router.get('/daily', ctrl.dailyBookingReport);
-router.get('/vehicle-utilization', ctrl.vehicleUtilizationReport);
-router.get('/executive-productivity', ctrl.executiveProductivityReport);
-router.get('/conversion', ctrl.conversionReport);
-router.get('/pending-followups', ctrl.pendingFollowupsReport);
-router.get('/charging-repair', ctrl.chargingRepairReport);
-router.get('/fleet-depletion', ctrl.fleetDepletionReport);
-router.get('/lost-reasons', ctrl.lostReasonReport);
+router.get('/admin',    authorize('superadmin'),            controller.getAdminDashboard);
+router.get('/manager',  authorize('superadmin', 'manager'), controller.getManagerDashboard);
+router.get('/executive',                                    controller.getExecutiveDashboard);
+router.get('/vehicles', authorize('superadmin', 'manager'), controller.getVehicleReport);
 
 module.exports = router;

@@ -1,159 +1,107 @@
-const jwt = require('jsonwebtoken');
-const Customer = require('../models/Customer');
-const DrivingLicense = require('../models/DrivingLicense');
+const jwt          = require('jsonwebtoken');
+const Customer     = require('../models/Customer');
 const asyncHandler = require('../utils/asyncHandler');
-const ApiError = require('../utils/ApiError');
+const ApiError     = require('../utils/ApiError');
+const { getPagination, buildPaginatedResponse } = require('../utils/pagination');
 
-// Generate a 6-digit OTP (stored in plain for demo; hash in production)
-const generateOtp = () => String(Math.floor(100000 + Math.random() * 900000));
+const generateOTP = () => String(Math.floor(100000 + Math.random() * 900000));
 
-const signCustomerToken = (id) =>
-  jwt.sign({ id, type: 'customer' }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_CUSTOMER_EXPIRES_IN || '30d'
+exports.registerCustomer = asyncHandler(async (req, res) => {
+  const existing = await Customer.findOne({ mobile: req.body.mobile });
+  if (existing) throw new ApiError(409, 'A customer with this mobile number already exists');
+
+  const customer = await Customer.create(req.body);
+  res.status(201).json({
+    success: true,
+    message: 'Customer registered successfully',
+    data: { _id: customer._id, customerId: customer.customerId, name: customer.name, mobile: customer.mobile }
   });
+});
 
-// POST /customer/send-otp
-exports.sendOtp = asyncHandler(async (req, res) => {
-  const { mobile, name } = req.body;
-  if (!mobile || !/^[6-9]\d{9}$/.test(mobile)) {
-    throw new ApiError(400, 'Valid 10-digit mobile number is required');
-  }
+exports.loginCustomer = asyncHandler(async (req, res) => {
+  const { mobile } = req.body;
+  if (!mobile) throw new ApiError(400, 'Mobile number is required');
 
-  const otp = generateOtp();
-  const otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 min
-
-  let customer = await Customer.findOne({ mobile });
+  let customer = await Customer.findOne({ mobile, active: true }).select('+otp +otpExpiry');
   if (!customer) {
-    if (!name) throw new ApiError(400, 'Name is required for new customers');
-    customer = new Customer({ mobile, name });
+    // Minimal auto-create so the customer can start a journey
+    customer = await Customer.create({ name: `User-${mobile.slice(-4)}`, mobile });
+    customer = await Customer.findById(customer._id).select('+otp +otpExpiry');
   }
-  customer.otp = otp;
-  customer.otpExpiry = otpExpiry;
-  customer.otpAttempts = 0;
+
+  const otp = generateOTP();
+  customer.otp       = otp;
+  customer.otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 min
   await customer.save();
 
-  // In production: send via SMS/WhatsApp gateway
-  console.log(`[OTP] Sending OTP ${otp} to ${mobile}`);
+  // TODO: send OTP via SMS / WhatsApp
+  console.log(`[OTP] ${mobile} → ${otp}`);
 
   res.json({
     success: true,
     message: 'OTP sent to your mobile number',
-    ...(process.env.NODE_ENV === 'development' && { otp }) // expose only in dev
+    ...(process.env.NODE_ENV !== 'production' && { otp }) // expose in dev/test only
   });
 });
 
-// POST /customer/verify-otp
 exports.verifyOtp = asyncHandler(async (req, res) => {
   const { mobile, otp } = req.body;
-  const customer = await Customer.findOne({ mobile }).select('+otp +otpExpiry +otpAttempts');
-  if (!customer) throw new ApiError(404, 'Customer not found');
+  if (!mobile || !otp) throw new ApiError(400, 'Mobile and OTP are required');
 
-  if (customer.otpAttempts >= 5) throw new ApiError(429, 'Too many OTP attempts. Request a new OTP.');
-  if (!customer.otp || customer.otpExpiry < new Date()) throw new ApiError(400, 'OTP expired. Request a new OTP.');
-  if (customer.otp !== String(otp)) {
-    customer.otpAttempts += 1;
-    await customer.save();
-    throw new ApiError(400, 'Invalid OTP');
-  }
+  const customer = await Customer.findOne({ mobile, active: true }).select('+otp +otpExpiry');
+  if (!customer)             throw new ApiError(404, 'Customer not found');
+  if (customer.otp !== otp)  throw new ApiError(400, 'Invalid OTP');
+  if (customer.otpExpiry < new Date()) throw new ApiError(400, 'OTP has expired. Please request a new one.');
 
-  customer.otp = undefined;
+  customer.otp       = undefined;
   customer.otpExpiry = undefined;
-  customer.otpAttempts = 0;
-  customer.isVerified = true;
   await customer.save();
 
-  const license = await DrivingLicense.findOne({ customerId: customer._id });
+  const token = jwt.sign({ id: customer._id, type: 'customer' }, process.env.JWT_SECRET, { expiresIn: '30d' });
 
   res.json({
     success: true,
-    token: signCustomerToken(customer._id),
-    customer: {
-      _id: customer._id,
-      customerId: customer.customerId,
-      name: customer.name,
-      mobile: customer.mobile,
-      email: customer.email,
-      profileComplete: customer.profileComplete
-    },
-    hasLicense: !!license,
-    licenseStatus: license?.verificationStatus || null
+    message: 'OTP verified successfully',
+    token,
+    customer: { _id: customer._id, customerId: customer.customerId, name: customer.name, mobile: customer.mobile }
   });
 });
 
-// GET /customer/me
-exports.getProfile = asyncHandler(async (req, res) => {
-  const customer = await Customer.findById(req.customer._id);
-  const license = await DrivingLicense.findOne({ customerId: customer._id }).select('-__v');
-  res.json({ success: true, data: { customer, license } });
-});
-
-// PUT /customer/me
-exports.updateProfile = asyncHandler(async (req, res) => {
-  const allowed = ['name', 'email', 'city', 'state', 'dateOfBirth'];
-  const updates = {};
-  allowed.forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
-  updates.profileComplete = !!(updates.name || req.customer.name) && !!(updates.email || req.customer.email);
-
-  const doc = await Customer.findByIdAndUpdate(req.customer._id, updates, { new: true, runValidators: true });
-  res.json({ success: true, data: doc });
-});
-
-// POST /customer/license
-exports.uploadLicense = asyncHandler(async (req, res) => {
-  const { licenseNumber, holderName, dateOfBirth, issueDate, expiryDate,
-    issuingAuthority, vehicleClasses, frontImageUrl, backImageUrl } = req.body;
-
-  if (!licenseNumber || !holderName || !dateOfBirth || !issueDate || !expiryDate) {
-    throw new ApiError(400, 'License number, holder name, DOB, issue date, and expiry date are required');
-  }
-
-  const expiry = new Date(expiryDate);
-  if (expiry < new Date()) throw new ApiError(400, 'Driving license is expired. Please renew it before booking a test drive.');
-
-  const existing = await DrivingLicense.findOne({ customerId: req.customer._id });
-  if (existing) {
-    Object.assign(existing, { licenseNumber, holderName, dateOfBirth, issueDate, expiryDate, issuingAuthority, vehicleClasses, frontImageUrl, backImageUrl, verificationStatus: 'Pending' });
-    await existing.save();
-    return res.json({ success: true, message: 'License updated. Pending admin verification.', data: existing });
-  }
-
-  const doc = await DrivingLicense.create({
-    customerId: req.customer._id,
-    licenseNumber, holderName, dateOfBirth, issueDate, expiryDate,
-    issuingAuthority, vehicleClasses, frontImageUrl, backImageUrl
-  });
-  res.status(201).json({ success: true, message: 'License submitted. Pending admin verification.', data: doc });
-});
-
-// GET /admin/td/customers — admin list
-exports.listCustomers = asyncHandler(async (req, res) => {
-  const { search, page = 1, limit = 20 } = req.query;
-  const skip = (page - 1) * limit;
+exports.getCustomers = asyncHandler(async (req, res) => {
+  const { page, limit, skip } = getPagination(req);
   const query = {};
-  if (search) {
-    const r = new RegExp(search.trim(), 'i');
-    query.$or = [{ name: r }, { mobile: r }, { email: r }, { customerId: r }];
+
+  if (req.query.search) {
+    const rx = new RegExp(req.query.search.trim(), 'i');
+    query.$or = [{ name: rx }, { mobile: rx }, { email: rx }, { customerId: rx }];
   }
+  if (req.query.branchId) query.branchId = req.query.branchId;
+
   const [docs, total] = await Promise.all([
-    Customer.find(query).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)),
+    Customer.find(query).populate('branchId', 'name code').sort({ createdAt: -1 }).skip(skip).limit(limit),
     Customer.countDocuments(query)
   ]);
-  res.json({ success: true, total, data: docs });
+
+  res.json({ success: true, ...buildPaginatedResponse({ docs, total, page, limit }) });
 });
 
-// PUT /admin/td/customers/:id/verify-license
-exports.verifyLicense = asyncHandler(async (req, res) => {
-  const { status, rejectionReason } = req.body;
-  if (!['Verified', 'Rejected'].includes(status)) throw new ApiError(400, 'Status must be Verified or Rejected');
+exports.getCustomerById = asyncHandler(async (req, res) => {
+  const customer = await Customer.findById(req.params.id)
+    .populate('branchId', 'name code')
+    .populate('leadId', 'name mobile status');
+  if (!customer) throw new ApiError(404, 'Customer not found');
+  res.json({ success: true, data: customer });
+});
 
-  const license = await DrivingLicense.findOne({ customerId: req.params.id });
-  if (!license) throw new ApiError(404, 'License not found for this customer');
+exports.updateCustomer = asyncHandler(async (req, res) => {
+  const customer = await Customer.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true })
+    .populate('branchId', 'name code');
+  if (!customer) throw new ApiError(404, 'Customer not found');
+  res.json({ success: true, data: customer });
+});
 
-  license.verificationStatus = status;
-  license.verifiedBy = req.admin._id;
-  license.verifiedAt = new Date();
-  if (status === 'Rejected') license.rejectionReason = rejectionReason;
-  await license.save();
-
-  res.json({ success: true, message: `License ${status.toLowerCase()}`, data: license });
+exports.getMyProfile = asyncHandler(async (req, res) => {
+  const customer = await Customer.findById(req.customer._id).populate('branchId', 'name code');
+  if (!customer) throw new ApiError(404, 'Customer not found');
+  res.json({ success: true, data: customer });
 });

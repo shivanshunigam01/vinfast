@@ -1,247 +1,167 @@
-const TDBooking = require('../models/TDBooking');
-const TDLog = require('../models/TDLog');
-const TDFeedback = require('../models/TDFeedback');
+const mongoose    = require('mongoose');
+const TDBooking   = require('../models/TDBooking');
+const TDLog       = require('../models/TDLog');
+const TDFeedback  = require('../models/TDFeedback');
 const DemoVehicle = require('../models/DemoVehicle');
-const Lead = require('../models/Lead');
-const ChargingLog = require('../models/ChargingLog');
-const RepairLog = require('../models/RepairLog');
-const LeadStageHistory = require('../models/LeadStageHistory');
+const Customer    = require('../models/Customer');
 const asyncHandler = require('../utils/asyncHandler');
 
-const dateRange = (from, to) => ({
-  $gte: new Date(from || new Date(new Date().setDate(1))),
-  $lte: new Date(to ? `${to}T23:59:59.999Z` : new Date())
-});
+// ─── Super Admin Dashboard ────────────────────────────────────────────────────
 
-// GET /admin/td/reports/daily
-exports.dailyBookingReport = asyncHandler(async (req, res) => {
-  const { date } = req.query;
-  const d = new Date(date || new Date().toDateString());
-  const next = new Date(d); next.setDate(d.getDate() + 1);
-
-  const [bookings, completed, cancelled, noShow] = await Promise.all([
-    TDBooking.countDocuments({ preferredDate: { $gte: d, $lt: next } }),
-    TDBooking.countDocuments({ preferredDate: { $gte: d, $lt: next }, status: 'Completed' }),
-    TDBooking.countDocuments({ preferredDate: { $gte: d, $lt: next }, status: 'Cancelled' }),
-    TDBooking.countDocuments({ preferredDate: { $gte: d, $lt: next }, status: 'No Show' })
-  ]);
-
-  const modelAgg = await TDBooking.aggregate([
-    { $match: { preferredDate: { $gte: d, $lt: next } } },
-    { $group: { _id: '$modelRequested', count: { $sum: 1 } } }
-  ]);
-
-  const slotAgg = await TDBooking.aggregate([
-    { $match: { preferredDate: { $gte: d, $lt: next }, status: { $nin: ['Cancelled'] } } },
-    { $group: { _id: '$slotStart', count: { $sum: 1 } } },
-    { $sort: { _id: 1 } }
-  ]);
-
-  res.json({
-    success: true,
-    data: {
-      date: d.toDateString(),
-      totalBookings: bookings,
-      completed,
-      cancelled,
-      noShow,
-      pending: bookings - completed - cancelled - noShow,
-      completionRate: bookings ? Math.round((completed / bookings) * 100) : 0,
-      byModel: Object.fromEntries(modelAgg.map(x => [x._id || 'Unknown', x.count])),
-      bySlot: slotAgg
-    }
-  });
-});
-
-// GET /admin/td/reports/vehicle-utilization
-exports.vehicleUtilizationReport = asyncHandler(async (req, res) => {
-  const { from, to } = req.query;
-  const range = dateRange(from, to);
-
-  const vehicles = await DemoVehicle.find({ active: true }).populate('assignedBranch', 'name');
-
-  const tdCounts = await TDBooking.aggregate([
-    { $match: { preferredDate: range, status: 'Completed', assignedVehicle: { $ne: null } } },
-    { $group: { _id: '$assignedVehicle', completedTDs: { $sum: 1 } } }
-  ]);
-  const tdMap = Object.fromEntries(tdCounts.map(x => [x._id.toString(), x.completedTDs]));
-
-  const data = vehicles.map(v => ({
-    vehicleId: v.vehicleId,
-    model: v.model,
-    variant: v.variant,
-    registrationNumber: v.registrationNumber,
-    branch: v.assignedBranch?.name,
-    status: v.status,
-    batteryPct: v.batteryPercentage,
-    totalKm: v.totalKmDriven,
-    dailyKm: v.dailyKm,
-    monthlyKm: v.monthlyKm,
-    totalTDs: v.totalTestDrives,
-    periodTDs: tdMap[v._id.toString()] || 0,
-    totalChargingCycles: v.totalChargingCycles,
-    replacementRecommended: v.replacementRecommended,
-    depletionPct: Math.min(100, Math.round((v.totalKmDriven / v.depletionThresholdKm) * 100))
-  }));
-
-  res.json({ success: true, data });
-});
-
-// GET /admin/td/reports/executive-productivity
-exports.executiveProductivityReport = asyncHandler(async (req, res) => {
-  const { from, to } = req.query;
-  const range = dateRange(from, to);
-
-  const agg = await TDBooking.aggregate([
-    { $match: { createdAt: range, assignedExecutive: { $ne: null } } },
-    {
-      $group: {
-        _id: '$assignedExecutive',
-        totalAssigned: { $sum: 1 },
-        completed: { $sum: { $cond: [{ $eq: ['$status', 'Completed'] }, 1, 0] } },
-        cancelled: { $sum: { $cond: [{ $eq: ['$status', 'Cancelled'] }, 1, 0] } },
-        noShow: { $sum: { $cond: [{ $eq: ['$status', 'No Show'] }, 1, 0] } }
-      }
-    },
-    { $lookup: { from: 'admins', localField: '_id', foreignField: '_id', as: 'exec' } },
-    { $unwind: '$exec' },
-    { $project: { executiveName: '$exec.name', executiveEmail: '$exec.email', totalAssigned: 1, completed: 1, cancelled: 1, noShow: 1, completionRate: { $cond: ['$totalAssigned', { $multiply: [{ $divide: ['$completed', '$totalAssigned'] }, 100] }, 0] } } }
-  ]);
-
-  res.json({ success: true, data: agg });
-});
-
-// GET /admin/td/reports/conversion
-exports.conversionReport = asyncHandler(async (req, res) => {
-  const { from, to } = req.query;
-  const range = dateRange(from, to);
-
-  const [tdCompleted, booked, delivered] = await Promise.all([
-    TDBooking.countDocuments({ createdAt: range, status: 'Completed' }),
-    Lead.countDocuments({ status: 'Booked', createdAt: range }),
-    Lead.countDocuments({ status: 'Delivered', createdAt: range })
-  ]);
-
-  const feedbackStats = await TDFeedback.aggregate([
-    { $match: { createdAt: range } },
-    { $group: { _id: null, interestedCount: { $sum: { $cond: ['$interestedToBuy', 1, 0] } }, total: { $sum: 1 }, avgRating: { $avg: '$overallRating' } } }
-  ]);
-
-  const stageMovements = await LeadStageHistory.aggregate([
-    { $match: { createdAt: range } },
-    { $group: { _id: '$toStage', count: { $sum: 1 } } }
-  ]);
-
-  res.json({
-    success: true,
-    data: {
-      tdCompleted,
-      interestedAfterTD: feedbackStats[0]?.interestedCount || 0,
-      booked,
-      delivered,
-      avgFeedbackRating: feedbackStats[0]?.avgRating?.toFixed(1) || 'N/A',
-      tdToBookingRate: tdCompleted ? Math.round((booked / tdCompleted) * 100) : 0,
-      stageMovements: Object.fromEntries(stageMovements.map(x => [x._id, x.count]))
-    }
-  });
-});
-
-// GET /admin/td/reports/pending-followups
-exports.pendingFollowupsReport = asyncHandler(async (req, res) => {
-  const overdue = await TDLog.find({
-    nextFollowUpDate: { $lte: new Date() },
-    leadStageUpdatedTo: { $nin: ['Booking', 'Delivered', 'Lost'] }
-  })
-    .populate('booking', 'bookingRef customerName customerMobile modelRequested')
-    .populate('executive', 'name email')
-    .sort({ nextFollowUpDate: 1 })
-    .limit(100);
-
-  res.json({ success: true, total: overdue.length, data: overdue });
-});
-
-// GET /admin/td/reports/charging-repair
-exports.chargingRepairReport = asyncHandler(async (req, res) => {
-  const vehicles = await DemoVehicle.find({ active: true, $or: [{ status: 'Charging' }, { status: 'Under Repair' }, { status: 'Battery Low' }, { replacementRecommended: true }] }).populate('assignedBranch', 'name');
-
-  const batteryLow = vehicles.filter(v => v.batteryPercentage <= v.batteryLowThreshold);
-  const charging = vehicles.filter(v => v.status === 'Charging');
-  const underRepair = vehicles.filter(v => v.status === 'Under Repair');
-  const replacementDue = vehicles.filter(v => v.replacementRecommended);
-
-  res.json({
-    success: true,
-    data: { batteryLow, charging, underRepair, replacementDue, summary: { batteryLowCount: batteryLow.length, chargingCount: charging.length, underRepairCount: underRepair.length, replacementDueCount: replacementDue.length } }
-  });
-});
-
-// GET /admin/td/reports/fleet-depletion
-exports.fleetDepletionReport = asyncHandler(async (req, res) => {
-  const vehicles = await DemoVehicle.find({ active: true }).populate('assignedBranch', 'name city');
-
-  const data = vehicles.map(v => {
-    const depletionPct = Math.min(100, Math.round((v.totalKmDriven / v.depletionThresholdKm) * 100));
-    let depletionStatus = 'Good';
-    if (depletionPct >= 90) depletionStatus = 'Critical';
-    else if (depletionPct >= 75) depletionStatus = 'Warning';
-    else if (depletionPct >= 50) depletionStatus = 'Moderate';
-
-    return {
-      vehicleId: v.vehicleId, model: v.model, registrationNumber: v.registrationNumber,
-      branch: v.assignedBranch?.name, totalKm: v.totalKmDriven, thresholdKm: v.depletionThresholdKm,
-      depletionPct, depletionStatus, replacementRecommended: v.replacementRecommended,
-      totalChargingCycles: v.totalChargingCycles, purchaseDate: v.purchaseDate,
-      lastServiceAt: v.lastServiceAt
-    };
-  }).sort((a, b) => b.depletionPct - a.depletionPct);
-
-  res.json({ success: true, data });
-});
-
-// GET /admin/td/reports/lost-reasons
-exports.lostReasonReport = asyncHandler(async (req, res) => {
-  const { from, to } = req.query;
-  const range = dateRange(from, to);
-
-  const cancelled = await TDBooking.aggregate([
-    { $match: { createdAt: range, status: 'Cancelled', cancellationReason: { $ne: null } } },
-    { $group: { _id: '$cancellationReason', count: { $sum: 1 }, cancelledBy: { $first: '$cancelledBy' } } },
-    { $sort: { count: -1 } }
-  ]);
-
-  const lostLeads = await Lead.countDocuments({ status: 'Lost', createdAt: range });
-
-  res.json({ success: true, data: { cancelledBookings: cancelled, lostLeads, total: cancelled.length } });
-});
-
-// GET /admin/td/reports/summary — main dashboard summary
-exports.reportSummary = asyncHandler(async (req, res) => {
-  const today = new Date(new Date().toDateString());
-  const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
-  const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+exports.getAdminDashboard = asyncHandler(async (req, res) => {
+  const weekAgo = new Date(); weekAgo.setDate(weekAgo.getDate() - 7);
 
   const [
-    todayBookings, todayCompleted, monthBookings, monthCompleted,
-    pendingApproval, pendingFollowups, vehiclesAvailable, vehiclesBusy, replacementDue
+    totalBookings,
+    completedTD,
+    pendingTD,
+    missedBookings,
+    totalVehicles,
+    availableVehicles,
+    totalCustomers,
+    bookingsThisWeek,
+    vehicleStatusBreakdown,
+    executivePerformance,
+    feedbackStats,
+    bookingsByStatus,
+    bookingsByModel
   ] = await Promise.all([
-    TDBooking.countDocuments({ preferredDate: { $gte: today, $lt: tomorrow } }),
-    TDBooking.countDocuments({ preferredDate: { $gte: today, $lt: tomorrow }, status: 'Completed' }),
-    TDBooking.countDocuments({ createdAt: { $gte: monthStart } }),
-    TDBooking.countDocuments({ createdAt: { $gte: monthStart }, status: 'Completed' }),
-    TDBooking.countDocuments({ status: 'Pending Approval' }),
-    TDLog.countDocuments({ nextFollowUpDate: { $lte: new Date() } }),
-    DemoVehicle.countDocuments({ status: 'Available', active: true }),
-    DemoVehicle.countDocuments({ status: { $in: ['Booked', 'Running', 'Charging', 'Under Repair'] }, active: true }),
-    DemoVehicle.countDocuments({ replacementRecommended: true, active: true })
+    TDBooking.countDocuments(),
+    TDBooking.countDocuments({ bookingStatus: 'COMPLETED' }),
+    TDBooking.countDocuments({ bookingStatus: { $in: ['PENDING', 'CONFIRMED'] } }),
+    TDBooking.countDocuments({ bookingStatus: 'MISSED' }),
+    DemoVehicle.countDocuments({ active: true }),
+    DemoVehicle.countDocuments({ status: 'AVAILABLE', active: true }),
+    Customer.countDocuments({ active: true }),
+    TDBooking.countDocuments({ createdAt: { $gte: weekAgo } }),
+
+    DemoVehicle.aggregate([
+      { $group: { _id: '$status', count: { $sum: 1 }, totalKM: { $sum: '$totalTestDriveKM' } } }
+    ]),
+
+    TDBooking.aggregate([
+      { $match: { bookingStatus: 'COMPLETED' } },
+      { $group: { _id: '$assignedExecutive', completed: { $sum: 1 } } },
+      { $sort: { completed: -1 } },
+      { $limit: 10 },
+      { $lookup: { from: 'admins', localField: '_id', foreignField: '_id', as: 'exec' } },
+      { $unwind: { path: '$exec', preserveNullAndEmpty: true } },
+      { $project: { name: '$exec.name', email: '$exec.email', completed: 1 } }
+    ]),
+
+    TDFeedback.aggregate([
+      { $group: {
+        _id: null,
+        avgOverall:           { $avg: '$overallRating' },
+        avgPurchaseIntention: { $avg: '$purchaseIntention' },
+        count:                { $sum: 1 }
+      }}
+    ]),
+
+    TDBooking.aggregate([
+      { $group: { _id: '$bookingStatus', count: { $sum: 1 } } }
+    ]),
+
+    TDBooking.aggregate([
+      { $lookup: { from: 'demovehicles', localField: 'vehicleId', foreignField: '_id', as: 'vehicle' } },
+      { $unwind: { path: '$vehicle', preserveNullAndEmpty: true } },
+      { $group: { _id: '$vehicle.model', count: { $sum: 1 } } }
+    ])
   ]);
+
+  const conversionRate      = totalBookings   > 0 ? ((completedTD / totalBookings) * 100).toFixed(1) : 0;
+  const utilizationRate     = totalVehicles   > 0 ? (((totalVehicles - availableVehicles) / totalVehicles) * 100).toFixed(1) : 0;
+  const toMap = (arr) => Object.fromEntries(arr.filter(x => x._id).map(x => [x._id, x.count]));
 
   res.json({
     success: true,
     data: {
-      today: { bookings: todayBookings, completed: todayCompleted },
-      month: { bookings: monthBookings, completed: monthCompleted, completionRate: monthBookings ? Math.round((monthCompleted / monthBookings) * 100) : 0 },
-      pendingApproval, pendingFollowups,
-      fleet: { available: vehiclesAvailable, busy: vehiclesBusy, replacementDue }
+      overview: { totalBookings, completedTD, pendingTD, missedBookings, totalVehicles, availableVehicles, totalCustomers, bookingsThisWeek },
+      rates:    { conversionRate: `${conversionRate}%`, utilizationRate: `${utilizationRate}%` },
+      vehicleStatusBreakdown,
+      executivePerformance,
+      feedback:        feedbackStats[0] || { avgOverall: 0, avgPurchaseIntention: 0, count: 0 },
+      bookingsByStatus: toMap(bookingsByStatus),
+      bookingsByModel:  toMap(bookingsByModel)
     }
   });
+});
+
+// ─── Sales Manager Dashboard ─────────────────────────────────────────────────
+
+exports.getManagerDashboard = asyncHandler(async (req, res) => {
+  const branchId = req.query.branchId;
+  const today    = new Date(); today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+
+  const branchFilter = branchId ? { branchId: new mongoose.Types.ObjectId(branchId) } : {};
+
+  const [dailyBookings, execWise, vehicleStatus, missedToday] = await Promise.all([
+    TDBooking.countDocuments({ ...branchFilter, slotDate: { $gte: today, $lt: tomorrow } }),
+
+    TDBooking.aggregate([
+      { $match: branchFilter },
+      { $group: { _id: { exec: '$assignedExecutive', status: '$bookingStatus' }, count: { $sum: 1 } } },
+      { $lookup: { from: 'admins', localField: '_id.exec', foreignField: '_id', as: 'exec' } },
+      { $unwind: { path: '$exec', preserveNullAndEmpty: true } },
+      { $group: {
+        _id:      '$_id.exec',
+        name:     { $first: '$exec.name' },
+        bookings: { $push: { status: '$_id.status', count: '$count' } }
+      }}
+    ]),
+
+    DemoVehicle.aggregate([
+      ...(branchId ? [{ $match: { branchId: new mongoose.Types.ObjectId(branchId) } }] : []),
+      { $group: { _id: '$status', count: { $sum: 1 } } }
+    ]),
+
+    TDBooking.countDocuments({ ...branchFilter, bookingStatus: 'MISSED', slotDate: { $gte: today, $lt: tomorrow } })
+  ]);
+
+  res.json({ success: true, data: { dailyBookings, execWise, vehicleStatus, missedToday } });
+});
+
+// ─── Executive Dashboard ──────────────────────────────────────────────────────
+
+exports.getExecutiveDashboard = asyncHandler(async (req, res) => {
+  const execId   = req.admin._id;
+  const today    = new Date(); today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+
+  // Collect bookingIds that already have feedback
+  const feedbackBookingIds = await TDFeedback.distinct('bookingId');
+
+  const [todayTDs, upcomingTDs, pendingFeedbackCount, totalCompleted] = await Promise.all([
+    TDBooking.find({
+      assignedExecutive: execId,
+      slotDate:      { $gte: today, $lt: tomorrow },
+      bookingStatus: { $in: ['CONFIRMED', 'IN_PROGRESS'] }
+    }).populate('customerId', 'name mobile').populate('vehicleId', 'model vehicleId'),
+
+    TDBooking.find({
+      assignedExecutive: execId,
+      slotDate:      { $gte: tomorrow },
+      bookingStatus: 'CONFIRMED'
+    }).populate('customerId', 'name mobile').populate('vehicleId', 'model vehicleId').limit(10),
+
+    TDBooking.countDocuments({
+      assignedExecutive: execId,
+      bookingStatus:     'COMPLETED',
+      _id:               { $nin: feedbackBookingIds }
+    }),
+
+    TDBooking.countDocuments({ assignedExecutive: execId, bookingStatus: 'COMPLETED' })
+  ]);
+
+  res.json({ success: true, data: { todayTDs, upcomingTDs, pendingFeedbackCount, totalCompleted } });
+});
+
+// ─── Vehicle Report ───────────────────────────────────────────────────────────
+
+exports.getVehicleReport = asyncHandler(async (req, res) => {
+  const vehicles = await DemoVehicle.find({ active: true })
+    .populate('branchId', 'name code')
+    .sort({ totalTestDriveKM: -1 });
+  res.json({ success: true, data: vehicles });
 });

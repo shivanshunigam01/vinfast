@@ -1,27 +1,26 @@
 const mongoose = require('mongoose');
 
 const TDFeedbackSchema = new mongoose.Schema({
-  booking: { type: mongoose.Schema.Types.ObjectId, ref: 'TDBooking', required: true, unique: true },
-  customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true },
-  vehicle: { type: mongoose.Schema.Types.ObjectId, ref: 'DemoVehicle' },
-
-  overallRating: { type: Number, required: true, min: 1, max: 5 },
-  vehicleRating: { type: Number, min: 1, max: 5 },
-  executiveRating: { type: Number, min: 1, max: 5 },
-  processRating: { type: Number, min: 1, max: 5 },
-
-  likedMost: { type: String, trim: true },
-  improvements: { type: String, trim: true },
-  wouldRecommend: { type: Boolean },
-  interestedToBuy: { type: Boolean },
-  preferredModel: { type: String, enum: ['VF 6', 'VF 7', 'Both', 'Undecided'] },
-  budgetRange: { type: String },
-
-  npsScore: { type: Number, min: 0, max: 10 },
-  comments: { type: String, trim: true },
-
-  submittedAt: { type: Date, default: Date.now },
-  feedbackChannel: { type: String, enum: ['In-person', 'WhatsApp', 'SMS Link', 'Email Link', 'App'], default: 'In-person' }
+  bookingId:          { type: mongoose.Schema.Types.ObjectId, ref: 'TDBooking', required: true, unique: true },
+  customerId:         { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true },
+  drivingExperience:  { type: Number, min: 1, max: 5 },
+  vehicleComfort:     { type: Number, min: 1, max: 5 },
+  batteryConfidence:  { type: Number, min: 1, max: 5 },
+  executiveBehaviour: { type: Number, min: 1, max: 5 },
+  purchaseIntention:  { type: Number, min: 1, max: 5 },
+  preferredVariant:   { type: String, trim: true },
+  remarks:            { type: String, trim: true },
+  overallRating:      { type: Number }
 }, { timestamps: true });
+
+// Auto-compute overall rating
+TDFeedbackSchema.pre('save', function (next) {
+  const ratingFields = ['drivingExperience', 'vehicleComfort', 'batteryConfidence', 'executiveBehaviour', 'purchaseIntention'];
+  const values = ratingFields.map(f => this[f]).filter(v => v != null);
+  if (values.length) {
+    this.overallRating = Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 10) / 10;
+  }
+  next();
+});
 
 module.exports = mongoose.model('TDFeedback', TDFeedbackSchema);
