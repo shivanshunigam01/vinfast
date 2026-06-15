@@ -231,7 +231,14 @@ exports.rescheduleBooking = asyncHandler(async (req, res) => {
   assertBookingAccess(booking, req.admin);
   if (booking.bookingStatus === 'COMPLETED') throw new ApiError(400, 'Cannot reschedule a completed booking');
 
-  const slotOk = await isSlotAvailable(booking.branchId, slotDate, slotTime, 2, booking._id);
+  const slotOk = await isSlotAvailable(
+    booking.branchId,
+    slotDate,
+    slotTime,
+    2,
+    booking._id,
+    booking.preferredModel || null
+  );
   if (!slotOk) throw new ApiError(409, 'New slot is not available. Please choose another time.');
 
   booking.slotDate = toLocalMidnight(slotDate) || new Date(slotDate);
@@ -252,6 +259,60 @@ exports.assignExecutive = asyncHandler(async (req, res) => {
   ).populate('assignedExecutive', 'name email');
   if (!booking) throw new ApiError(404, 'Booking not found');
   res.json({ success: true, data: booking, message: 'Executive assigned' });
+});
+
+exports.assignVehicle = asyncHandler(async (req, res) => {
+  const { vehicleId } = req.body;
+  const booking = await TDBooking.findById(req.params.id);
+  if (!booking) throw new ApiError(404, 'Booking not found');
+  assertBookingAccess(booking, req.admin);
+
+  if (['COMPLETED', 'CANCELLED'].includes(booking.bookingStatus)) {
+    throw new ApiError(400, `Cannot change vehicle on a ${booking.bookingStatus} booking`);
+  }
+
+  if (booking.vehicleId) {
+    const previous = await DemoVehicle.findById(booking.vehicleId);
+    if (previous && ['BOOKED', 'AVAILABLE'].includes(previous.status)) {
+      previous.status = 'AVAILABLE';
+      await previous.save();
+    }
+  }
+
+  if (vehicleId) {
+    const vehicle = await DemoVehicle.findById(vehicleId);
+    if (!vehicle) throw new ApiError(404, 'Vehicle not found');
+    if (!vehicle.active) throw new ApiError(400, 'Vehicle is not active');
+    if (booking.preferredModel && vehicle.model !== booking.preferredModel) {
+      throw new ApiError(400, `This booking is for ${booking.preferredModel}. Selected vehicle is ${vehicle.model}.`);
+    }
+    if (!['AVAILABLE', 'BOOKED'].includes(vehicle.status) && String(vehicle._id) !== String(booking.vehicleId)) {
+      throw new ApiError(409, `Vehicle is ${vehicle.status.replace('_', ' ')} — not available for this booking`);
+    }
+    vehicle.status = 'BOOKED';
+    await vehicle.save();
+    booking.vehicleId = vehicle._id;
+  } else {
+    booking.vehicleId = undefined;
+  }
+
+  if (booking.bookingStatus === 'PENDING' && booking.vehicleId && booking.assignedExecutive) {
+    booking.bookingStatus = 'CONFIRMED';
+  }
+
+  await booking.save();
+
+  await booking.populate([
+    { path: 'vehicleId', select: 'vehicleId model variant registrationNo color status' },
+    { path: 'assignedExecutive', select: 'name email' },
+    { path: 'customerId', select: 'name mobile' }
+  ]);
+
+  res.json({
+    success: true,
+    data: booking,
+    message: vehicleId ? 'Demo vehicle assigned to booking' : 'Vehicle removed from booking'
+  });
 });
 
 exports.getMyBookings = asyncHandler(async (req, res) => {

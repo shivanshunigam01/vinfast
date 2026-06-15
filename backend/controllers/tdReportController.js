@@ -5,92 +5,15 @@ const DemoVehicle = require('../models/DemoVehicle');
 const Customer = require('../models/Customer');
 const asyncHandler = require('../utils/asyncHandler');
 const { syncUnlinkedTestDrives } = require('../utils/syncTestDriveBooking');
+const { buildAdminReport } = require('../utils/tdReportBuilder');
 
 exports.getAdminDashboard = asyncHandler(async (req, res) => {
-  const { from, to, branchId } = req.query;
-  const dateFilter = {};
-  if (from || to) {
-    dateFilter.slotDate = {};
-    if (from) dateFilter.slotDate.$gte = new Date(from);
-    if (to) dateFilter.slotDate.$lte = new Date(to);
-  }
-  const branchFilter = branchId ? { branchId } : {};
-  const baseFilter = { ...dateFilter, ...branchFilter };
-
-  const [
-    totalBookings,
-    completed,
-    pending,
-    cancelled,
-    missed,
-    inProgress,
-    totalCustomers,
-    vehicleStats,
-    feedbackStats,
-    bookingsByStatus,
-    bookingsByModel,
-    bookingTrend,
-    executivePerf,
-    topFeedback
-  ] = await Promise.all([
-    TDBooking.countDocuments(baseFilter),
-    TDBooking.countDocuments({ ...baseFilter, bookingStatus: 'COMPLETED' }),
-    TDBooking.countDocuments({ ...baseFilter, bookingStatus: { $in: ['PENDING', 'CONFIRMED'] } }),
-    TDBooking.countDocuments({ ...baseFilter, bookingStatus: 'CANCELLED' }),
-    TDBooking.countDocuments({ ...baseFilter, bookingStatus: 'MISSED' }),
-    TDBooking.countDocuments({ ...baseFilter, bookingStatus: 'IN_PROGRESS' }),
-    Customer.countDocuments(branchFilter),
-    DemoVehicle.aggregate([
-      ...(branchId ? [{ $match: { branchId: require('mongoose').Types.ObjectId.createFromHexString(branchId) } }] : []),
-      { $group: { _id: '$status', count: { $sum: 1 } } }
-    ]),
-    TDFeedback.aggregate([
-      { $group: { _id: null, avgOverall: { $avg: '$overallRating' }, count: { $sum: 1 } } }
-    ]),
-    TDBooking.aggregate([
-      { $match: baseFilter },
-      { $group: { _id: '$bookingStatus', count: { $sum: 1 } } }
-    ]),
-    TDBooking.aggregate([
-      { $match: baseFilter },
-      { $group: { _id: '$preferredModel', count: { $sum: 1 } } }
-    ]),
-    TDBooking.aggregate([
-      { $match: baseFilter },
-      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$slotDate' } }, count: { $sum: 1 } } },
-      { $sort: { _id: 1 } },
-      { $limit: 30 }
-    ]),
-    TDBooking.aggregate([
-      { $match: { ...baseFilter, assignedExecutive: { $exists: true } } },
-      { $group: { _id: '$assignedExecutive', total: { $sum: 1 }, completed: { $sum: { $cond: [{ $eq: ['$bookingStatus', 'COMPLETED'] }, 1, 0] } } } },
-      { $lookup: { from: 'admins', localField: '_id', foreignField: '_id', as: 'executive' } },
-      { $unwind: { path: '$executive', preserveNullAndEmptyArrays: true } },
-      { $project: { name: '$executive.name', total: 1, completed: 1 } },
-      { $sort: { completed: -1 } },
-      { $limit: 10 }
-    ]),
-    TDFeedback.find().populate('customerId', 'name').sort({ overallRating: -1 }).limit(5)
-  ]);
-
-  const conversionRate = totalBookings > 0 ? Math.round((completed / totalBookings) * 100) : 0;
-  const vehicleStatusMap = Object.fromEntries(vehicleStats.map((v) => [v._id, v.count]));
-
-  res.json({
-    success: true,
-    data: {
-      overview: { totalBookings, completed, pending, cancelled, missed, inProgress, totalCustomers, conversionRate },
-      vehicleFleet: vehicleStatusMap,
-      feedback: feedbackStats[0] || { avgOverall: 0, count: 0 },
-      charts: {
-        bookingsByStatus: Object.fromEntries(bookingsByStatus.map((x) => [x._id, x.count])),
-        bookingsByModel: Object.fromEntries(bookingsByModel.map((x) => [x._id || 'Unknown', x.count])),
-        bookingTrend,
-      },
-      executivePerformance: executivePerf,
-      topFeedback
-    }
+  const data = await buildAdminReport({
+    from: req.query.from,
+    to: req.query.to,
+    branchId: req.query.branchId
   });
+  res.json({ success: true, data });
 });
 
 exports.getManagerDashboard = asyncHandler(async (req, res) => {

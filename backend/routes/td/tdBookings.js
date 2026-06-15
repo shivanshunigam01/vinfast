@@ -17,5 +17,6 @@ router.patch('/:id', ctrl.updateBooking);
 router.patch('/:id/cancel', ctrl.cancelBooking);
 router.patch('/:id/reschedule', ctrl.rescheduleBooking);
 router.patch('/:id/assign-executive', authorize('superadmin', 'manager'), ctrl.assignExecutive);
+router.patch('/:id/assign-vehicle', authorize('superadmin', 'manager'), ctrl.assignVehicle);
 
 module.exports = router;
