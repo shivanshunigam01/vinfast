@@ -2,12 +2,24 @@ const jwt = require('jsonwebtoken');
 const Admin = require('../models/Admin');
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
+const { designationLabel } = require('../utils/staffRoles');
 
 const signToken = (admin) => jwt.sign(
   { id: admin._id },
   process.env.JWT_SECRET,
   { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
 );
+
+function toAuthAdmin(admin) {
+  return {
+    _id: admin._id,
+    name: admin.name,
+    email: admin.email,
+    role: admin.role,
+    designation: admin.designation || null,
+    designationLabel: designationLabel(admin.designation)
+  };
+}
 
 exports.login = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
@@ -20,10 +32,10 @@ exports.login = asyncHandler(async (req, res) => {
   res.json({
     success: true,
     token: signToken(admin),
-    admin: { _id: admin._id, name: admin.name, email: admin.email, role: admin.role }
+    admin: toAuthAdmin(admin)
   });
 });
 
 exports.me = asyncHandler(async (req, res) => {
-  res.json({ success: true, admin: req.admin });
+  res.json({ success: true, admin: toAuthAdmin(req.admin) });
 });

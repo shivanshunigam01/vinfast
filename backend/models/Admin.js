@@ -1,11 +1,16 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const { STAFF_DESIGNATIONS } = require('../utils/staffRoles');
 
 const AdminSchema = new mongoose.Schema({
   name: { type: String, required: [true, 'Name is required'], trim: true },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
   password: { type: String, required: true, select: false, minlength: 8 },
   role: { type: String, enum: ['superadmin', 'manager', 'executive'], default: 'executive' },
+  designation: {
+    type: String,
+    enum: STAFF_DESIGNATIONS
+  },
   active: { type: Boolean, default: true }
 }, { timestamps: true });
 

@@ -4,6 +4,7 @@ const TDFeedback = require('../models/TDFeedback');
 const DemoVehicle = require('../models/DemoVehicle');
 const Customer = require('../models/Customer');
 const asyncHandler = require('../utils/asyncHandler');
+const { syncUnlinkedTestDrives } = require('../utils/syncTestDriveBooking');
 
 exports.getAdminDashboard = asyncHandler(async (req, res) => {
   const { from, to, branchId } = req.query;
@@ -64,7 +65,7 @@ exports.getAdminDashboard = asyncHandler(async (req, res) => {
       { $match: { ...baseFilter, assignedExecutive: { $exists: true } } },
       { $group: { _id: '$assignedExecutive', total: { $sum: 1 }, completed: { $sum: { $cond: [{ $eq: ['$bookingStatus', 'COMPLETED'] }, 1, 0] } } } },
       { $lookup: { from: 'admins', localField: '_id', foreignField: '_id', as: 'executive' } },
-      { $unwind: { path: '$executive', preserveNullAndEmpty: true } },
+      { $unwind: { path: '$executive', preserveNullAndEmptyArrays: true } },
       { $project: { name: '$executive.name', total: 1, completed: 1 } },
       { $sort: { completed: -1 } },
       { $limit: 10 }
@@ -93,6 +94,10 @@ exports.getAdminDashboard = asyncHandler(async (req, res) => {
 });
 
 exports.getManagerDashboard = asyncHandler(async (req, res) => {
+  await syncUnlinkedTestDrives().catch((err) => {
+    console.error('[getManagerDashboard] TD sync backfill failed:', err.message);
+  });
+
   const { branchId } = req.query;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -114,7 +119,7 @@ exports.getManagerDashboard = asyncHandler(async (req, res) => {
       { $match: { ...branchFilter, bookingStatus: { $in: ['COMPLETED', 'CANCELLED', 'MISSED'] } } },
       { $group: { _id: '$assignedExecutive', total: { $sum: 1 }, completed: { $sum: { $cond: [{ $eq: ['$bookingStatus', 'COMPLETED'] }, 1, 0] } } } },
       { $lookup: { from: 'admins', localField: '_id', foreignField: '_id', as: 'exec' } },
-      { $unwind: { path: '$exec', preserveNullAndEmpty: true } },
+      { $unwind: { path: '$exec', preserveNullAndEmptyArrays: true } },
       { $project: { name: '$exec.name', total: 1, completed: 1 } }
     ])
   ]);

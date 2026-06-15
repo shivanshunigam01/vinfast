@@ -20,6 +20,7 @@ const TDLog = require('../models/TDLog');
 const TDFeedback = require('../models/TDFeedback');
 const ChargingLog = require('../models/ChargingLog');
 const VehicleStatusLog = require('../models/VehicleStatusLog');
+const { buildDemoFleet, SLOT_CONFIG_DEFAULTS } = require('../data/tdDemoFleet');
 
 const FORCE_RESEED = process.argv.includes('--force');
 
@@ -34,8 +35,9 @@ async function clearTDData() {
   await Customer.deleteMany({});
   await ChargingLog.deleteMany({});
   await VehicleStatusLog.deleteMany({});
-  // Only remove TD-specific admins (managers/executives created by seed)
-  await Admin.deleteMany({ role: { $in: ['manager', 'executive'] } });
+  // Only remove TD-specific staff users created by seed
+  await Admin.deleteMany({ designation: { $in: ['sales_executive', 'sales_manager', 'branch_manager', 'gm', 'ceo', 'md'] } });
+  await Admin.deleteMany({ role: { $in: ['manager', 'executive'] }, designation: { $exists: false } });
   await Branch.deleteMany({});
   console.log('✅ TD data cleared\n');
 }
@@ -62,54 +64,65 @@ async function seed() {
     }
     console.log(`   ✅ Branch: ${branch.name} (${branch.code})`);
 
-    // ─── 2. Admin Users ───────────────────────────────────────────────
-    console.log('\n👥 Creating Admin Users...');
+    // ─── 2. Staff Users (Sales hierarchy) ─────────────────────────────
+    console.log('\n👥 Creating Staff Users...');
 
-    const managerData = {
-      name: 'Rajesh Kumar',
-      email: 'manager@patliputravinfast.com',
-      password: 'Manager@123',
-      role: 'manager',
-      active: true
-    };
-    let manager = await Admin.findOne({ email: managerData.email });
-    if (!manager) manager = await Admin.create(managerData);
+    const { authRoleForDesignation } = require('../utils/staffRoles');
 
-    // Update branch managerRef
-    branch.managerRef = manager._id;
-    await branch.save();
-
-    const executivesData = [
-      { name: 'Amit Sharma', email: 'amit.sharma@patliputravinfast.com', password: 'Exec@1234', role: 'executive' },
-      { name: 'Priya Singh', email: 'priya.singh@patliputravinfast.com', password: 'Exec@1234', role: 'executive' },
-      { name: 'Rohan Verma', email: 'rohan.verma@patliputravinfast.com', password: 'Exec@1234', role: 'executive' }
+    const staffUsersData = [
+      { name: 'Amit Sharma', email: 'amit.sharma@patliputravinfast.com', password: 'Exec@1234', designation: 'sales_executive' },
+      { name: 'Priya Singh', email: 'priya.singh@patliputravinfast.com', password: 'Exec@1234', designation: 'sales_executive' },
+      { name: 'Rohan Verma', email: 'rohan.verma@patliputravinfast.com', password: 'Exec@1234', designation: 'sales_executive' },
+      { name: 'Rajesh Kumar', email: 'manager@patliputravinfast.com', password: 'Manager@123', designation: 'sales_manager' },
+      { name: 'Sunita Mehta', email: 'sunita.mehta@patliputravinfast.com', password: 'Branch@123', designation: 'branch_manager' },
+      { name: 'Vikram Rao', email: 'vikram.rao@patliputravinfast.com', password: 'GM@123456', designation: 'gm' },
+      { name: 'Anil Kapoor', email: 'anil.kapoor@patliputravinfast.com', password: 'CEO@123456', designation: 'ceo' },
+      { name: 'Deepak Malhotra', email: 'deepak.malhotra@patliputravinfast.com', password: 'MD@1234567', designation: 'md' }
     ];
 
-    const executives = [];
-    for (const ed of executivesData) {
-      let exec = await Admin.findOne({ email: ed.email });
-      if (!exec) exec = await Admin.create({ ...ed, active: true });
-      executives.push(exec);
+    const staffUsers = [];
+    let branchManager = null;
+
+    for (const sd of staffUsersData) {
+      let user = await Admin.findOne({ email: sd.email });
+      const role = authRoleForDesignation(sd.designation);
+      if (!user) {
+        user = await Admin.create({ ...sd, role, active: true });
+      } else {
+        user.name = sd.name;
+        user.designation = sd.designation;
+        user.role = role;
+        user.active = true;
+        if (sd.password) user.password = sd.password;
+        await user.save();
+      }
+      staffUsers.push(user);
+      if (sd.designation === 'branch_manager') branchManager = user;
     }
 
-    console.log(`   ✅ Manager: ${manager.email}`);
-    executives.forEach((e) => console.log(`   ✅ Executive: ${e.email}`));
+    if (branchManager) {
+      branch.managerRef = branchManager._id;
+      await branch.save();
+    }
+
+    staffUsers.forEach((u) => console.log(`   ✅ ${u.name} (${u.designation})`));
+
+    const executives = staffUsers.filter((u) => u.designation === 'sales_executive');
+    const manager = branchManager || staffUsers.find((u) => u.designation === 'sales_manager');
 
     // ─── 3. Demo Vehicles ─────────────────────────────────────────────
     console.log('\n🚗 Creating Demo Vehicles...');
 
-    const vehiclesData = [
-      { model: 'VF 6', variant: 'Plus', registrationNo: 'BR01AB1234', vinNo: 'VIN6PLUS001PAT', color: 'Pearl White', batteryPercent: 95, currentOdometer: 1240, branchId: branch._id, status: 'AVAILABLE', insuranceValidity: new Date('2026-12-31'), serviceDueDate: new Date('2026-09-01') },
-      { model: 'VF 6', variant: 'Eco', registrationNo: 'BR01AB5678', vinNo: 'VIN6ECO002PAT', color: 'Jet Black', batteryPercent: 78, currentOdometer: 3450, branchId: branch._id, status: 'AVAILABLE', insuranceValidity: new Date('2027-01-31'), serviceDueDate: new Date('2026-10-15') },
-      { model: 'VF 7', variant: 'Plus', registrationNo: 'BR01CD1234', vinNo: 'VIN7PLUS003PAT', color: 'Zenith Grey', batteryPercent: 100, currentOdometer: 800, branchId: branch._id, status: 'AVAILABLE', insuranceValidity: new Date('2027-03-31'), serviceDueDate: new Date('2027-01-01') },
-      { model: 'VF 7', variant: 'Eco', registrationNo: 'BR01CD5678', vinNo: 'VIN7ECO004PAT', color: 'Crimson Red', batteryPercent: 15, currentOdometer: 6200, branchId: branch._id, status: 'BATTERY_LOW', insuranceValidity: new Date('2026-11-30'), serviceDueDate: new Date('2026-08-01') },
-      { model: 'VF 6', variant: 'Plus', registrationNo: 'BR01EF1234', vinNo: 'VIN6PLUS005PAT', color: 'Urban Mint', batteryPercent: 60, currentOdometer: 2100, branchId: branch._id, status: 'CHARGING', insuranceValidity: new Date('2027-02-28'), serviceDueDate: new Date('2026-12-01') }
-    ];
+    const vehiclesData = buildDemoFleet(branch._id);
 
     const vehicles = [];
     for (const vd of vehiclesData) {
       let v = await DemoVehicle.findOne({ registrationNo: vd.registrationNo });
       if (!v) v = await DemoVehicle.create(vd);
+      else {
+        Object.assign(v, vd);
+        await v.save();
+      }
       vehicles.push(v);
     }
 
@@ -140,14 +153,11 @@ async function seed() {
     if (!slotConfig) {
       slotConfig = await TDSlotConfig.create({
         branchId: branch._id,
-        slotDuration: 60,
-        bufferTime: 15,
-        workingStartTime: '09:00',
-        workingEndTime: '18:00',
-        maxConcurrentBookings: 2,
-        autoExpiry: true,
-        blockedDates: []
+        ...SLOT_CONFIG_DEFAULTS
       });
+    } else {
+      Object.assign(slotConfig, SLOT_CONFIG_DEFAULTS);
+      await slotConfig.save();
     }
     console.log(`   ✅ Slots: ${slotConfig.workingStartTime}–${slotConfig.workingEndTime}, ${slotConfig.slotDuration}min + ${slotConfig.bufferTime}min buffer`);
 
@@ -198,8 +208,9 @@ async function seed() {
     const threeDaysAgo = new Date(today); threeDaysAgo.setDate(today.getDate() - 3);
     const fiveDaysAgo = new Date(today); fiveDaysAgo.setDate(today.getDate() - 5);
 
-    const availableVehicle = vehicles.find((v) => v.status === 'AVAILABLE' && v.model === 'VF 7');
-    const vf6Vehicle = vehicles.find((v) => v.status === 'AVAILABLE' && v.model === 'VF 6');
+    const availableVehicle = vehicles.find((v) => v.status === 'AVAILABLE' && v.model === 'VF 7' && v.variant === 'Wind');
+    const vf6Vehicle = vehicles.find((v) => v.status === 'AVAILABLE' && v.model === 'VF 6' && v.variant === 'Wind');
+    const vf7WindInf = vehicles.find((v) => v.variant === 'Wind Infinity' && v.model === 'VF 7');
 
     const bookingsData = [
       // Completed booking with log + feedback
@@ -246,7 +257,7 @@ async function seed() {
       // Today — confirmed/upcoming
       {
         customerId: customers[2]._id,
-        vehicleId: vehicles[2]?._id,
+        vehicleId: vf7WindInf?._id,
         branchId: branch._id,
         assignedExecutive: executives[0]._id,
         slotDate: today,
@@ -260,7 +271,7 @@ async function seed() {
       // Tomorrow — pending
       {
         customerId: customers[4]._id,
-        vehicleId: vehicles[2]?._id,
+        vehicleId: vf7WindInf?._id,
         branchId: branch._id,
         assignedExecutive: executives[1]._id,
         slotDate: tomorrow,
@@ -356,8 +367,8 @@ async function seed() {
         batteryConfidence: 4,
         executiveBehaviour: 5,
         purchaseIntention: 4,
-        preferredVariant: 'VF 7 Plus',
-        remarks: 'Amazing experience! The VF 7 is a beast. Very impressed with the range and technology. Definitely planning to buy.'
+        preferredVariant: 'VF 7 Wind Infinity',
+        remarks: 'Amazing experience! The VF 7 Wind Infinity is a beast. Very impressed with the range and technology. Definitely planning to buy.'
       });
       console.log(`   ✅ Feedback from ${customers[0].name} — ⭐⭐⭐⭐⭐`);
     }
@@ -368,17 +379,16 @@ async function seed() {
     console.log('='.repeat(60));
     console.log('\n📊 SUMMARY:');
     console.log(`   Branch:          ${branch.name}`);
-    console.log(`   Manager:         ${manager.email}  (Password: Manager@123)`);
-    console.log(`   Executives:      ${executives.length}`);
-    executives.forEach((e) => console.log(`                    ${e.email}  (Password: Exec@1234)`));
+    console.log(`   Staff users:     ${staffUsers.length} (Sales Executive → MD)`);
+    staffUsers.forEach((u) => console.log(`                    ${u.name} — ${u.designation}`));
     console.log(`   Demo Vehicles:   ${vehicles.length} (${vehicles.filter((v) => v.status === 'AVAILABLE').length} available)`);
     console.log(`   Customers:       ${customers.length}`);
     console.log(`   Bookings:        ${bookings.length}`);
     console.log(`   Slot Config:     ${slotConfig.slotDuration}min slots, 9AM-6PM`);
     console.log('\n🔑 Admin Panel Login:');
     console.log(`   URL: http://localhost:5173/admin/login`);
-    console.log(`   Manager: manager@patliputravinfast.com / Manager@123`);
-    console.log(`   Executive: amit.sharma@patliputravinfast.com / Exec@1234`);
+    console.log(`   Sales Manager: manager@patliputravinfast.com / Manager@123`);
+    console.log(`   Sales Executive: amit.sharma@patliputravinfast.com / Exec@1234`);
     console.log('\n🌐 API Base: http://localhost:${process.env.PORT || 5000}/api/v1');
     console.log('   GET  /api/v1/td/slots/available?branchId=<id>&date=<YYYY-MM-DD>');
     console.log('   GET  /api/v1/td/vehicles/available?branchId=<id>');

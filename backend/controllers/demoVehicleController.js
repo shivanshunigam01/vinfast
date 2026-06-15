@@ -65,7 +65,7 @@ exports.updateVehicle = asyncHandler(async (req, res) => {
 });
 
 exports.updateVehicleStatus = asyncHandler(async (req, res) => {
-  const { status, reason, battery, odometer } = req.body;
+  const { status, reason, battery, odometer, availableAgainAt } = req.body;
   const vehicle = await DemoVehicle.findById(req.params.id);
   if (!vehicle) throw new ApiError(404, 'Vehicle not found');
 
@@ -73,6 +73,13 @@ exports.updateVehicleStatus = asyncHandler(async (req, res) => {
   vehicle.status = status;
   if (battery !== undefined) vehicle.batteryPercent = battery;
   if (odometer !== undefined) vehicle.currentOdometer = odometer;
+
+  if (status === 'AVAILABLE') {
+    vehicle.availableAgainAt = undefined;
+  } else if (availableAgainAt !== undefined) {
+    vehicle.availableAgainAt = availableAgainAt ? new Date(availableAgainAt) : undefined;
+  }
+
   await vehicle.save();
 
   await VehicleStatusLog.create({

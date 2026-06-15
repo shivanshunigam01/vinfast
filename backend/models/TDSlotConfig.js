@@ -9,6 +9,14 @@ const TDSlotConfigSchema = new mongoose.Schema({
   maxConcurrentBookings: { type: Number, default: 2 },
   autoExpiry: { type: Boolean, default: true },
   blockedDates: [{ type: String }],
+  /** Admin-managed bookable times (HH:MM). Shown on website exactly as configured. */
+  slotTimes: [{ type: String, trim: true }],
+  /** Per-date admin-disabled slots: { "2026-06-17": ["12:00"] } */
+  disabledSlotsByDate: {
+    type: Map,
+    of: [String],
+    default: () => new Map()
+  },
   active: { type: Boolean, default: true }
 }, { timestamps: true });
 

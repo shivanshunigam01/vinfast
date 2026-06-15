@@ -12,6 +12,25 @@ const { isSlotAvailable } = require('../utils/slotEngine');
 const { autoAssignExecutive } = require('../utils/executiveAssignment');
 const { notifyBookingConfirmed } = require('../utils/notifications');
 const TDSlotConfig = require('../models/TDSlotConfig');
+const TestDrive = require('../models/TestDrive');
+const Admin = require('../models/Admin');
+const { syncUnlinkedTestDrives } = require('../utils/syncTestDriveBooking');
+const { normalizeTimeTo24h, toLocalMidnight, calendarDateBounds } = require('../utils/timeFormat');
+const {
+  isManagerRole,
+  assertBookingAccess,
+  pickStaffBookingUpdates
+} = require('../utils/bookingAccess');
+
+const BOOKING_TO_TESTDRIVE_STATUS = {
+  PENDING: 'Pending',
+  CONFIRMED: 'Confirmed',
+  IN_PROGRESS: 'Confirmed',
+  COMPLETED: 'Completed',
+  CANCELLED: 'Cancelled',
+  RESCHEDULED: 'Rescheduled',
+  MISSED: 'Cancelled'
+};
 
 exports.createBooking = asyncHandler(async (req, res) => {
   const { customerId, vehicleId, branchId, slotDate, slotTime, preferredModel } = req.body;
@@ -46,8 +65,8 @@ exports.createBooking = asyncHandler(async (req, res) => {
     vehicleId: vehicle ? vehicle._id : undefined,
     branchId,
     assignedExecutive: executive ? executive._id : undefined,
-    slotDate: new Date(slotDate),
-    slotTime,
+    slotDate: toLocalMidnight(slotDate) || new Date(slotDate),
+    slotTime: normalizeTimeTo24h(slotTime) || slotTime,
     preferredModel,
     dlVerified: dl.verificationStatus === 'VERIFIED',
     bookingStatus: 'CONFIRMED',
@@ -91,15 +110,24 @@ exports.createBooking = asyncHandler(async (req, res) => {
 });
 
 exports.getBookings = asyncHandler(async (req, res) => {
+  await syncUnlinkedTestDrives().catch((err) => {
+    console.error('[getBookings] TD sync backfill failed:', err.message);
+  });
+
   const { page, limit, skip } = getPagination(req);
   const query = {};
+  if (req.admin.role === 'executive') {
+    query.assignedExecutive = req.admin._id;
+  }
   if (req.query.branchId) query.branchId = req.query.branchId;
   if (req.query.status) query.bookingStatus = req.query.status;
   if (req.query.executiveId) query.assignedExecutive = req.query.executiveId;
   if (req.query.customerId) query.customerId = req.query.customerId;
   if (req.query.date) {
-    const d = req.query.date;
-    query.slotDate = { $gte: new Date(`${d}T00:00:00.000Z`), $lte: new Date(`${d}T23:59:59.999Z`) };
+    const bounds = calendarDateBounds(req.query.date);
+    if (bounds) {
+      query.slotDate = { $gte: bounds.startOfDay, $lte: bounds.endOfDay };
+    }
   }
   if (req.query.from || req.query.to) {
     query.slotDate = {};
@@ -109,10 +137,11 @@ exports.getBookings = asyncHandler(async (req, res) => {
 
   const [docs, total] = await Promise.all([
     TDBooking.find(query)
-      .populate('customerId', 'name mobile customerId')
+      .populate('customerId', 'name mobile customerId email city')
       .populate('vehicleId', 'vehicleId model registrationNo color')
       .populate('assignedExecutive', 'name email')
-      .populate('branchId', 'name code')
+      .populate('branchId', '_id name code')
+      .populate('testDriveId', 'customerName mobile email city model variant preferredTestDriveLocation ownsCar currentCarDetails purchaseTimeline remarks status')
       .sort({ slotDate: -1, slotTime: -1 })
       .skip(skip).limit(limit),
     TDBooking.countDocuments(query)
@@ -123,26 +152,58 @@ exports.getBookings = asyncHandler(async (req, res) => {
 
 exports.getBookingById = asyncHandler(async (req, res) => {
   const booking = await TDBooking.findById(req.params.id)
-    .populate('customerId', 'name mobile email customerId city')
+    .populate('customerId', 'name mobile email customerId city address')
     .populate('vehicleId', 'vehicleId model variant registrationNo batteryPercent color')
-    .populate('assignedExecutive', 'name email')
-    .populate('branchId', 'name code address');
-  if (!booking) throw new ApiError(404, 'Booking not found');
+    .populate('assignedExecutive', 'name email role designation')
+    .populate('branchId', '_id name code address')
+    .populate('testDriveId');
+  assertBookingAccess(booking, req.admin);
   res.json({ success: true, data: booking });
 });
 
+const { fetchAssignableStaff } = require('./tdStaffController');
+
+exports.listExecutives = asyncHandler(async (_req, res) => {
+  const data = await fetchAssignableStaff();
+  res.json({ success: true, data });
+});
+
 exports.updateBooking = asyncHandler(async (req, res) => {
-  const booking = await TDBooking.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true })
-    .populate('customerId', 'name mobile')
+  const existing = await TDBooking.findById(req.params.id);
+  assertBookingAccess(existing, req.admin);
+
+  const updates = isManagerRole(req.admin)
+    ? { ...req.body }
+    : pickStaffBookingUpdates(req.body);
+
+  if (!Object.keys(updates).length) {
+    throw new ApiError(400, 'No allowed fields to update');
+  }
+
+  if (updates.slotTime) updates.slotTime = normalizeTimeTo24h(updates.slotTime) || updates.slotTime;
+  if (updates.slotDate) updates.slotDate = toLocalMidnight(updates.slotDate) || new Date(updates.slotDate);
+
+  const booking = await TDBooking.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true })
+    .populate('customerId', 'name mobile email city customerId')
     .populate('assignedExecutive', 'name email')
-    .populate('branchId', 'name code');
+    .populate('branchId', 'name code')
+    .populate('testDriveId');
+
   if (!booking) throw new ApiError(404, 'Booking not found');
+
+  if (booking.testDriveId && updates.bookingStatus) {
+    const tdStatus = BOOKING_TO_TESTDRIVE_STATUS[updates.bookingStatus];
+    if (tdStatus) {
+      await TestDrive.findByIdAndUpdate(booking.testDriveId._id || booking.testDriveId, { status: tdStatus });
+    }
+  }
+
   res.json({ success: true, data: booking });
 });
 
 exports.cancelBooking = asyncHandler(async (req, res) => {
   const booking = await TDBooking.findById(req.params.id).populate('vehicleId');
-  if (!booking) throw new ApiError(404, 'Booking not found');
+  assertBookingAccess(booking, req.admin);
   if (['COMPLETED', 'CANCELLED'].includes(booking.bookingStatus)) {
     throw new ApiError(400, `Cannot cancel a booking that is ${booking.bookingStatus}`);
   }
@@ -150,6 +211,10 @@ exports.cancelBooking = asyncHandler(async (req, res) => {
   booking.bookingStatus = 'CANCELLED';
   booking.cancellationReason = req.body.reason || '';
   await booking.save();
+
+  if (booking.testDriveId) {
+    await TestDrive.findByIdAndUpdate(booking.testDriveId, { status: 'Cancelled' });
+  }
 
   // Release vehicle if booked
   if (booking.vehicleId && booking.vehicleId.status === 'BOOKED') {
@@ -163,14 +228,14 @@ exports.cancelBooking = asyncHandler(async (req, res) => {
 exports.rescheduleBooking = asyncHandler(async (req, res) => {
   const { slotDate, slotTime } = req.body;
   const booking = await TDBooking.findById(req.params.id);
-  if (!booking) throw new ApiError(404, 'Booking not found');
+  assertBookingAccess(booking, req.admin);
   if (booking.bookingStatus === 'COMPLETED') throw new ApiError(400, 'Cannot reschedule a completed booking');
 
   const slotOk = await isSlotAvailable(booking.branchId, slotDate, slotTime, 2, booking._id);
   if (!slotOk) throw new ApiError(409, 'New slot is not available. Please choose another time.');
 
-  booking.slotDate = new Date(slotDate);
-  booking.slotTime = slotTime;
+  booking.slotDate = toLocalMidnight(slotDate) || new Date(slotDate);
+  booking.slotTime = normalizeTimeTo24h(slotTime) || slotTime;
   booking.bookingStatus = 'RESCHEDULED';
   booking.rescheduleCount += 1;
   await booking.save();
@@ -193,13 +258,21 @@ exports.getMyBookings = asyncHandler(async (req, res) => {
   const { page, limit, skip } = getPagination(req);
   const query = { assignedExecutive: req.admin._id };
   if (req.query.status) query.bookingStatus = req.query.status;
+  if (req.query.date) {
+    const bounds = calendarDateBounds(req.query.date);
+    if (bounds) {
+      query.slotDate = { $gte: bounds.startOfDay, $lte: bounds.endOfDay };
+    }
+  }
 
   const [docs, total] = await Promise.all([
     TDBooking.find(query)
-      .populate('customerId', 'name mobile customerId')
-      .populate('vehicleId', 'vehicleId model registrationNo')
-      .populate('branchId', 'name')
-      .sort({ slotDate: 1 })
+      .populate('customerId', 'name mobile customerId email city')
+      .populate('vehicleId', 'vehicleId model registrationNo color')
+      .populate('assignedExecutive', 'name email designation')
+      .populate('branchId', '_id name code')
+      .populate('testDriveId', 'customerName mobile email city model variant preferredTestDriveLocation ownsCar currentCarDetails purchaseTimeline remarks status')
+      .sort({ slotDate: 1, slotTime: 1 })
       .skip(skip).limit(limit),
     TDBooking.countDocuments(query)
   ]);

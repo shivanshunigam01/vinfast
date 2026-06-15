@@ -33,6 +33,7 @@ app.get('/health', (req, res) => {
 });
 
 app.use('/api/v1/public', routes.public);
+app.use('/api/v1/whatsapp-otp', routes.whatsappOtp);
 app.use('/api/v1/leads', formLimiter, routes.publicLeads);
 app.use('/api/v1/test-drives', formLimiter, routes.publicTestDrives);
 app.use('/api/v1/enquiries', formLimiter, routes.publicEnquiries);
@@ -40,16 +41,19 @@ app.use('/api/v1/enquiries', formLimiter, routes.publicEnquiries);
 app.use('/api/v1/admin/auth', routes.auth);
 app.use('/api/v1/admin/dashboard', routes.dashboard);
 app.use('/api/v1/admin/leads', routes.adminLeads);
+app.use('/api/v1/admin/meta-leads', routes.adminMetaLeads);
 app.use('/api/v1/admin/test-drives', routes.adminTestDrives);
 app.use('/api/v1/admin/enquiries', routes.adminEnquiries);
 app.use('/api/v1/admin/products', routes.products);
 app.use('/api/v1/admin/offers', routes.offers);
 app.use('/api/v1/admin/homepage', routes.homepage);
+app.use('/api/v1/admin/settings', routes.settings);
 app.use('/api/v1/admin/content', routes.content);
 app.use('/api/v1/admin/media', routes.media);
 
 // ── Test Drive Management Module ────────────────────────────────────────────
 // Public / Customer-facing
+app.use('/api/v1/td/branches', routes.tdBranches);
 app.use('/api/v1/td/customers', routes.tdCustomers);
 app.use('/api/v1/td/vehicles/available', (req, res, next) => { req.url = '/available'; next(); }, routes.tdDemoVehicles);
 app.use('/api/v1/td/slots', routes.tdSlots);
@@ -65,6 +69,7 @@ app.use('/api/v1/admin/td/feedback', routes.tdFeedback);
 app.use('/api/v1/admin/td/reports', routes.tdReports);
 app.use('/api/v1/admin/td/customers', routes.tdCustomers);
 app.use('/api/v1/admin/td/slots', routes.tdSlots);
+app.use('/api/v1/admin/td/users', routes.tdStaffUsers);
 // ────────────────────────────────────────────────────────────────────────────
 
 app.use(notFound);

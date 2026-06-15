@@ -7,7 +7,7 @@ const mobileBody = (field = 'mobile') => body(field).trim().matches(/^[6-9]\d{9}
 exports.objectIdParam = objectIdParam;
 exports.searchQueryValidation = [
   query('page').optional().isInt({ min: 1 }).withMessage('page must be positive'),
-  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('limit must be between 1 and 100')
+  query('limit').optional().isInt({ min: 1, max: 5000 }).withMessage('limit must be between 1 and 5000')
 ];
 
 exports.authLoginValidation = [
@@ -102,4 +102,33 @@ exports.mediaValidation = [
   body('name').optional().trim(),
   body('publicId').optional().trim(),
   body('tag').optional().trim()
+];
+
+const metaLeadStatuses = ['New Lead', 'Contact Attempted', 'Interested', 'Negotiation', 'Booked', 'Delivered', 'Lost', 'Not Interested'];
+
+exports.metaLeadIdParam = (field = 'id') => param(field).trim().notEmpty().withMessage(`${field} is required`);
+
+exports.metaLeadCreateValidation = [
+  body('name').trim().notEmpty().withMessage('Name is required'),
+  body('mobile').trim().notEmpty().withMessage('Mobile is required'),
+  body('email').optional({ checkFalsy: true }).isEmail().withMessage('Please enter a valid email'),
+  body('status').optional().isIn(metaLeadStatuses).withMessage('Invalid lead status'),
+  body('nextFollowUp').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('nextFollowUp must be a valid date'),
+  body('financeNeeded').optional().isBoolean().withMessage('financeNeeded must be boolean'),
+  body('exchangeNeeded').optional().isBoolean().withMessage('exchangeNeeded must be boolean')
+];
+
+exports.metaLeadUpdateValidation = [
+  exports.metaLeadIdParam(),
+  body('name').optional().trim().notEmpty().withMessage('Name cannot be empty'),
+  body('mobile').optional().trim().notEmpty().withMessage('Mobile cannot be empty'),
+  body('email').optional({ checkFalsy: true }).isEmail().withMessage('Please enter a valid email'),
+  body('status').optional().isIn(metaLeadStatuses).withMessage('Invalid lead status'),
+  body('nextFollowUp').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('nextFollowUp must be a valid date'),
+  body('financeNeeded').optional().isBoolean().withMessage('financeNeeded must be boolean'),
+  body('exchangeNeeded').optional().isBoolean().withMessage('exchangeNeeded must be boolean')
+];
+
+exports.metaLeadBulkValidation = [
+  body('leads').isArray({ min: 1 }).withMessage('leads must be a non-empty array')
 ];

@@ -13,5 +13,6 @@ router.get('/config', ctrl.getSlotConfig);
 router.post('/config', authorize('superadmin', 'manager'), ctrl.upsertSlotConfig);
 router.post('/block-date', authorize('superadmin', 'manager'), ctrl.blockDate);
 router.post('/unblock-date', authorize('superadmin', 'manager'), ctrl.unblockDate);
+router.post('/date-overrides', authorize('superadmin', 'manager'), ctrl.setDateSlotOverrides);
 
 module.exports = router;

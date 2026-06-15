@@ -9,7 +9,9 @@
     "dev": "nodemon server.js",
     "seed:admin": "node scripts/seedAdmin.js",
     "seed:td": "node scripts/seedTD.js",
-    "seed:td:force": "node scripts/seedTD.js --force"
+    "seed:td:force": "node scripts/seedTD.js --force",
+    "seed:td:module": "node scripts/seedTDModule.js",
+    "seed:td:fleet": "node scripts/seedTDModule.js --force-fleet"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

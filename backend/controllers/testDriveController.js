@@ -3,9 +3,33 @@ const Admin = require('../models/Admin');
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
 const { getPagination, buildPaginatedResponse } = require('../utils/pagination');
+const { syncTestDriveToTDBooking } = require('../utils/syncTestDriveBooking');
+const { validatePublicTestDriveSlot } = require('../utils/publicTestDriveSlot');
+const { toLocalMidnight } = require('../utils/timeFormat');
 
 exports.createTestDrive = asyncHandler(async (req, res) => {
-  const booking = await TestDrive.create(req.body);
+  const { branch, preferredDate, preferredTime, model } = req.body;
+
+  const { branch: resolvedBranch, normalizedTime } = await validatePublicTestDriveSlot({
+    branch,
+    preferredDate,
+    preferredTime,
+    model
+  }).catch((err) => {
+    throw new ApiError(err.statusCode || 400, err.message);
+  });
+
+  const payload = {
+    ...req.body,
+    branch: resolvedBranch.name,
+    preferredDate: toLocalMidnight(preferredDate) || preferredDate,
+    preferredTime: normalizedTime
+  };
+
+  const booking = await TestDrive.create(payload);
+  await syncTestDriveToTDBooking(booking).catch((err) => {
+    console.error('[createTestDrive] TD booking sync failed:', err.message);
+  });
   res.status(201).json({
     success: true,
     message: "Test drive booked! We'll confirm your slot within 2 hours.",
@@ -49,6 +73,9 @@ exports.updateTestDrive = asyncHandler(async (req, res) => {
     .populate('assignedExecutive', 'name email role');
 
   if (!item) throw new ApiError(404, 'Test drive not found');
+  await syncTestDriveToTDBooking(item).catch((err) => {
+    console.error('[updateTestDrive] TD booking sync failed:', err.message);
+  });
   res.json({ success: true, data: item });
 });
 

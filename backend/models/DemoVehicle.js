@@ -17,6 +17,8 @@ const DemoVehicleSchema = new mongoose.Schema({
   },
   insuranceValidity: { type: Date },
   serviceDueDate: { type: Date },
+  /** When the vehicle is expected back in service (repair, charging, etc.) */
+  availableAgainAt: { type: Date },
   isLocked: { type: Boolean, default: false },
   lockExpiresAt: { type: Date },
   totalTestDriveKM: { type: Number, default: 0 },

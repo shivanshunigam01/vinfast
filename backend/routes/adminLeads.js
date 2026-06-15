@@ -10,6 +10,6 @@ router.use(protect);
 router.get('/', validate(searchQueryValidation), controller.getLeads);
 router.get('/:id', validate([objectIdParam()]), controller.getLeadById);
 router.put('/:id', validate(adminLeadUpdateValidation), controller.updateLead);
-router.delete('/:id', validate([objectIdParam()]), authorize('superadmin'), controller.deleteLead);
+router.delete('/:id', validate([objectIdParam()]), authorize('superadmin', 'manager'), controller.deleteLead);
 
 module.exports = router;

@@ -1,12 +1,15 @@
 module.exports = {
   // --- Existing routes ---
   auth: require('./auth'),
+  settings: require('./settings'),
+  whatsappOtp: require('./whatsappOtp'),
   public: require('./public'),
   publicLeads: require('./leads'),
   publicTestDrives: require('./testDrives'),
   publicEnquiries: require('./enquiries'),
   dashboard: require('./dashboard'),
   adminLeads: require('./adminLeads'),
+  adminMetaLeads: require('./adminMetaLeads'),
   adminTestDrives: require('./adminTestDrives'),
   adminEnquiries: require('./adminEnquiries'),
   products: require('./products'),
@@ -23,5 +26,6 @@ module.exports = {
   tdSlots: require('./td/tdSlots'),
   tdLogs: require('./td/tdLogs'),
   tdFeedback: require('./td/tdFeedback'),
-  tdReports: require('./td/tdReports')
+  tdReports: require('./td/tdReports'),
+  tdStaffUsers: require('./td/staffUsers')
 };

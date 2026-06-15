@@ -20,7 +20,8 @@ const TDBookingSchema = new mongoose.Schema({
   reminderSentAt: { type: Date },
   cancellationReason: { type: String, trim: true },
   rescheduleCount: { type: Number, default: 0 },
-  remarks: { type: String, trim: true }
+  remarks: { type: String, trim: true },
+  testDriveId: { type: mongoose.Schema.Types.ObjectId, ref: 'TestDrive', unique: true, sparse: true }
 }, { timestamps: true });
 
 TDBookingSchema.pre('save', async function (next) {

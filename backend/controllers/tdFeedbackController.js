@@ -3,6 +3,7 @@ const TDBooking = require('../models/TDBooking');
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
 const { getPagination, buildPaginatedResponse } = require('../utils/pagination');
+const { syncLeadFromTDFeedback } = require('../utils/tdFeedbackToLead');
 
 exports.submitFeedback = asyncHandler(async (req, res) => {
   const { bookingId, customerId, drivingExperience, vehicleComfort, batteryConfidence, executiveBehaviour, purchaseIntention, preferredVariant, remarks } = req.body;
@@ -12,7 +13,17 @@ exports.submitFeedback = asyncHandler(async (req, res) => {
 
   const existing = await TDFeedback.findOne({ bookingId });
   if (existing) {
-    return res.json({ success: true, data: existing, message: 'Feedback already submitted' });
+    const lead = await syncLeadFromTDFeedback({
+      bookingId,
+      feedback: existing,
+      changedBy: req.admin?._id
+    });
+    return res.json({
+      success: true,
+      data: existing,
+      leadId: lead?._id,
+      message: 'Feedback already submitted — lead synced to CRM'
+    });
   }
 
   const feedback = await TDFeedback.create({
@@ -27,7 +38,20 @@ exports.submitFeedback = asyncHandler(async (req, res) => {
     remarks
   });
 
-  res.status(201).json({ success: true, data: feedback, message: 'Thank you for your feedback!' });
+  const lead = await syncLeadFromTDFeedback({
+    bookingId,
+    feedback,
+    changedBy: req.admin?._id
+  });
+
+  res.status(201).json({
+    success: true,
+    data: feedback,
+    leadId: lead?._id,
+    message: lead
+      ? 'Thank you! Customer feedback saved and added to Leads.'
+      : 'Thank you for your feedback!'
+  });
 });
 
 exports.getFeedbacks = asyncHandler(async (req, res) => {
